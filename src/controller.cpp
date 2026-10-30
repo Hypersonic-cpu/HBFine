@@ -44,7 +44,7 @@ public:
         if (stats_.accepted_requests != 0 || last_time_ != 0 || address % 4096 || bytes % 4096 || bytes == 0)
             throw std::invalid_argument("preload must be a nonempty page-aligned initialization region");
         decode_address(address, base_, c_);
-        if (bytes > static_cast<std::uint64_t>(c_.stacks) * (512ULL << 30) - (address - base_))
+        if (bytes > static_cast<std::uint64_t>(c_.stacks) * capacity_bytes_per_stack(c_) - (address - base_))
             throw std::out_of_range("preload exceeds HBF capacity");
         preloaded_.push_back({address, address + bytes});
     }
@@ -182,7 +182,7 @@ private:
     static Time transfer_time(int bytes, double bandwidth) { return static_cast<Time>(std::ceil(bytes * 1000.0 / bandwidth)); }
     int channel_id(const Address& a) const { return a.stack * 16 + a.channel; }
     int bank_id(const Address& a) const { return channel_id(a) * c_.banks_per_channel + a.bank; }
-    int plane_id(const Address& a) const { return (a.stack * 16 + a.die) * 32 + a.plane; }
+    int plane_id(const Address& a) const { return (a.stack * c_.dies_per_stack + a.die) * c_.planes_per_die + a.plane; }
     void schedule(Time time, std::function<void()> action) { events_.push({time, serial_++, std::move(action)}); }
 
     bool valid_page(std::uint64_t page) const {
@@ -264,7 +264,7 @@ private:
             busy += duration;
             ready = next = start + duration;
         };
-        const int die = address.stack * 16 + address.die;
+        const int die = address.stack * c_.dies_per_stack + address.die;
         reserve(die_next_[die], c_.core_transfer_GBps_per_die, stats_.die_transfer_busy_ps[die]);
         reserve(ecc_next_[address.stack], c_.ecc_GBps_per_stack, stats_.ecc_busy_ps[address.stack]);
         return ready;
@@ -424,7 +424,7 @@ private:
 Controller::Controller(const Config& config, std::uint64_t base, std::size_t capacity) {
     validate_config(config);
     if (!capacity || base % 4096 || base > std::numeric_limits<std::uint64_t>::max() -
-        static_cast<std::uint64_t>(config.stacks) * (512ULL << 30))
+        static_cast<std::uint64_t>(config.stacks) * capacity_bytes_per_stack(config))
         throw std::invalid_argument("invalid HBF device base or request capacity");
     impl_ = std::make_unique<Impl>(config, base, capacity);
 }

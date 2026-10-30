@@ -49,6 +49,37 @@ void mapping_and_read_service() {
         require(stats.host_read_bytes == 256 && stats.sensed_bytes == 3 * 4096, "host/array traffic distinction");
     }
 }
+void eight_hi_mapping() {
+    std::mt19937_64 random(1030);
+    for (auto geometry : {GeometryProfile::OCPReference, GeometryProfile::HBFlexResearch}) {
+        Config c; c.geometry = geometry; c.stacks = 2; c.dies_per_stack = 8;
+        c.planes_per_bank = geometry == GeometryProfile::OCPReference ? 2 : 1;
+        c.banks_per_channel = geometry == GeometryProfile::OCPReference ? 8 : 16;
+        validate_config(c);
+        const auto size = c.stacks * capacity_bytes_per_stack(c);
+        require(size == (512ULL << 30), "8-Hi total capacity");
+        for (int i = 0; i < 20000; ++i) {
+            const auto address = random() % size;
+            require(encode_address(decode_address(address, 0, c), 0, c) == address, "8-Hi mapping inversion");
+        }
+        rejects([&] { decode_address(size, 0, c); });
+        Controller device(c);
+        device.preload_region(0, size);
+        for (int stack = 0; stack < 2; ++stack) {
+            Address last;
+            last.stack = stack; last.channel = 15; last.bank = c.banks_per_channel - 1;
+            last.die = 7; last.plane = 31;
+            const auto address = encode_address(last, 0, c);
+            require(device.try_submit({static_cast<std::uint64_t>(stack), address, 64, Operation::Read}, 0),
+                    "last 8-Hi die read admission");
+        }
+        require(device.advance(5000000).size() == 2, "last 8-Hi die reads did not finish");
+        const auto stats = device.statistics();
+        require(stats.plane_reads.size() == 512 && stats.plane_reads.at(255) == 1 && stats.plane_reads.at(511) == 1,
+                "8-Hi plane indices or counts");
+    }
+}
+
 void program_legality_and_backpressure() {
     Config c; c.channel_queue_capacity = 64; c.allow_program = true;
     // Deliberately synthetic test assumptions; no production erase timing is supplied.
@@ -76,7 +107,7 @@ void program_legality_and_backpressure() {
 }
 int main() {
     try {
-        mapping_and_read_service(); program_legality_and_backpressure();
+        mapping_and_read_service(); eight_hi_mapping(); program_legality_and_backpressure();
         std::cout << "HBFine standalone device contract passed\n";
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

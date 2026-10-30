@@ -13,7 +13,7 @@ struct Address {
 // AXI ports are virtual and may stripe its 64B beats without adding bandwidth.
 inline Address decode_address(std::uint64_t address, std::uint64_t base,
                                      const Config& c) {
-    const auto capacity = static_cast<std::uint64_t>(c.stacks) * (512ULL << 30);
+    const auto capacity = static_cast<std::uint64_t>(c.stacks) * capacity_bytes_per_stack(c);
     if (address < base || address - base >= capacity) throw std::out_of_range("HBF physical address outside stack capacity");
     const auto offset = address - base;
     const auto channels = static_cast<std::uint64_t>(c.stacks * c.host_channels_per_stack);

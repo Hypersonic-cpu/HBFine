@@ -39,6 +39,11 @@ struct Config {
     std::uint64_t base_die_sram_bytes_per_stack{40000000};
 };
 
+inline std::uint64_t capacity_bytes_per_stack(const Config& c) {
+    return static_cast<std::uint64_t>(c.dies_per_stack) * c.planes_per_die *
+           c.blocks_per_plane * c.pages_per_block * c.page_bytes;
+}
+
 // Throws std::invalid_argument before constructing any device resources.
 void validate_config(const Config& config);
 

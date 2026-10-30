@@ -93,3 +93,20 @@ sums Bank sense/program/erase occupancy, so divide by the number of Banks when
 reporting stack utilization. Channel read/write occupancies are independent;
 Bank wait time is summed per array operation and transfer wait per reservation,
 not a direct GPU stall-cycle counter.
+
+## 8-Hi research geometry
+
+`dies_per_stack=8` is an explicitly modeled scaling alternative. Keep 32 Planes
+per die, 512 blocks per Plane, 512 pages per block and 4KiB pages: capacity is
+256GiB/stack. `HBFlexResearch` then uses 16 Banks per Host Channel and one Plane
+per Bank; `OCPReference` uses 8 Banks per Host Channel and two Planes per Bank.
+The 16-Hi defaults and mappings remain unchanged. All addressing, physical die
+indices and resource/statistics vectors scale with the chosen die count.
+
+At 4us sense / 75us program, the 8-Hi HBFlex mapping has array ceilings of
+262.144GB/s read and 13.981013GB/s program per stack. Host targets and the external
+link ceiling remain separate explicit inputs. An embedding study may choose
+262.144/13.98GB/s targets and a 384GB/s Grade-1 link ceiling; these are research
+assumptions rather than a measured Grade-1 device guarantee. Buffer hits retain
+their normal fast path; changing die count does not turn each hit into a new
+4us sense. Input preloading marks NAND data valid and leaves page caches cold.
