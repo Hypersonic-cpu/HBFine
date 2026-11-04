@@ -23,7 +23,7 @@ public:
         : c_(config), base_(base), capacity_(capacity),
           channels_(c_.stacks * c_.host_channels_per_stack),
           banks_(scheduling_unit_count(c_)),
-          dispatch_next_(c_.stacks), die_next_(c_.stacks * c_.dies_per_stack), ecc_next_(c_.stacks) {
+          dispatch_next_(c_.stacks), die_next_(c_.stacks * c_.dies_per_stack), ecc_next_(c_.stacks), sram_next_(c_.enable_read_sram ? c_.stacks : 0) {
         const auto planes = static_cast<std::size_t>(c_.stacks * c_.dies_per_stack * c_.planes_per_die);
         stats_.stack_read_bytes.resize(c_.stacks);
         stats_.channel_read_bytes.resize(channels_.size());
@@ -59,6 +59,8 @@ public:
         if (write && request.operation != hbfine::Operation::Write && request.operation != hbfine::Operation::Writeback)
             throw std::invalid_argument("unsupported HBF operation");
         if (write && !c_.allow_program) throw std::invalid_argument("HBF programs disabled in read-only profile");
+        if (request.read_path != ReadPath::Host && (!c_.enable_read_sram || write))
+            throw std::invalid_argument("SRAM path requires an enabled read-only device");
         const auto address = decode_address(request.global_addr, base_, c_);
         const auto channel = channel_id(address);
         const auto page = request.global_addr / 4096 * 4096;
@@ -78,7 +80,7 @@ public:
         last_time_ = now;
         const auto axi = request.axi_id < 0 ? request.request_id % 16384 :
                                                     static_cast<std::uint64_t>(request.axi_id);
-        const OrderKey order{channel, axi, write};
+        const OrderKey order{channel, axi, write, request.read_path == ReadPath::Prefetch};
         parents_.emplace(request.request_id, Parent{request, beats, order});
         ordering_[order].push_back(request.request_id);
         channels_[channel].queued_beats += beats;
@@ -91,7 +93,7 @@ public:
             }
             writes_.at(page).reserved_mask |= mask;
             stats_.host_write_bytes += request.size_bytes;
-        } else {
+        } else if (request.read_path != ReadPath::Prefetch) {
             stats_.host_read_bytes += request.size_bytes;
         }
         const Time arrival = now;
@@ -137,7 +139,7 @@ public:
     const Statistics& statistics() const { return stats_; }
 
 private:
-    using OrderKey = std::tuple<int, std::uint64_t, bool>;
+    using OrderKey = std::tuple<int, std::uint64_t, bool, bool>;
     struct Parent { Request request; int remaining; OrderKey order; bool ready{}; Error error{Error::None}; };
     struct Beat { std::uint64_t parent, address; Time arrival; };
     struct Buffer { std::uint64_t page{no_page}; bool ready{}; int pins{}; Time last_use{}; std::vector<Beat> waiting; };
@@ -166,7 +168,7 @@ private:
     Time last_time_{};
     std::vector<Channel> channels_;
     std::vector<Bank> banks_;
-    std::vector<Time> dispatch_next_, die_next_, ecc_next_;
+    std::vector<Time> dispatch_next_, die_next_, ecc_next_, sram_next_;
     std::priority_queue<Event, std::vector<Event>, std::greater<Event>> events_;
     std::unordered_map<std::uint64_t, Parent> parents_;
     std::map<OrderKey, std::deque<std::uint64_t>> ordering_;
@@ -213,12 +215,15 @@ private:
         if (queue.empty()) ordering_.erase(key);
     }
 
-    void transfer_read(const Beat& beat, int bank, int slot) {
-        const auto address = decode_address(beat.address, base_, c_);
+    Time sram_transfer(int stack) {
+        const Time start = std::max(current_, sram_next_[stack]);
+        sram_next_[stack] = start + transfer_time(64, c_.read_sram_bandwidth_GBps_per_stack);
+        stats_.transfer_wait_ps += start - current_;
+        return sram_next_[stack] + ns(c_.read_sram_access_latency_ns);
+    }
+
+    void transfer_host(const Beat& beat, const Address& address, int bank, int slot) {
         const int channel = channel_id(address);
-        auto& buffer = banks_[bank].buffers[slot];
-        ++buffer.pins;
-        buffer.last_use = current_;
         auto& ch = channels_[channel];
         const Time start = std::max(current_, ch.read_next);
         const Time duration = transfer_time(64, c_.read_target_GBps_per_stack / 16);
@@ -230,10 +235,26 @@ private:
         ++stats_.bank_reads[bank];
         ++stats_.plane_reads[physical_plane_id(address, c_)];
         schedule(ch.read_next, [this, beat, bank, slot] {
-            --banks_[bank].buffers[slot].pins;
+            if (slot >= 0) --banks_[bank].buffers[slot].pins;
             finish(beat);
-            wake(bank);
+            if (slot >= 0) wake(bank);
         });
+    }
+
+    void transfer_read(const Beat& beat, int bank, int slot) {
+        const auto address = decode_address(beat.address, base_, c_);
+        auto& buffer = banks_[bank].buffers[slot];
+        ++buffer.pins;
+        buffer.last_use = current_;
+        if (parents_.at(beat.parent).request.read_path == ReadPath::Prefetch) {
+            schedule(sram_transfer(address.stack), [this, beat, bank, slot] {
+                --banks_[bank].buffers[slot].pins;
+                finish(beat);
+                wake(bank);
+            });
+        } else {
+            transfer_host(beat, address, bank, slot);
+        }
     }
 
     void receive_read(const Beat& beat) {
@@ -242,6 +263,12 @@ private:
         const auto address = decode_address(beat.address, base_, c_);
         const auto mapping = map_read(address, beat.address, base_, c_);
         const int bank = mapping.unit;
+        if (parents_.at(beat.parent).request.read_path == ReadPath::Resident) {
+            schedule(sram_transfer(address.stack), [this, beat, address, bank] {
+                transfer_host(beat, address, bank, -1);
+            });
+            return;
+        }
         for (int slot = 0; slot < 2; ++slot) {
             auto& buffer = banks_[bank].buffers[slot];
             if (buffer.page != mapping.buffer_key) continue;

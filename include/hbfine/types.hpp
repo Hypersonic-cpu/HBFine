@@ -7,12 +7,14 @@ namespace hbfine {
 // Physical time in picoseconds. The embedding simulator owns clock conversion.
 using Time = std::uint64_t;
 enum class Operation : std::uint8_t { Read, Write, Writeback };
+enum class ReadPath : std::uint8_t { Host, Prefetch, Resident };
 enum class Error : int { None = 0, UninitializedPage = 1, IncompletePageTimeout = 2, IllegalProgramOrder = 3 };
 struct Request {
     std::uint64_t request_id, global_addr;
     int size_bytes;
     Operation operation;
     std::int64_t axi_id{-1}; // -1 assigns request_id modulo the 14-bit AXI ID space
+    ReadPath read_path{ReadPath::Host};
 };
 struct Completion {
     std::uint64_t request_id, global_addr;

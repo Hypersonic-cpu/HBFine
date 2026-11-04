@@ -25,6 +25,11 @@ void validate_config(const Config& c) {
         c.blocks_per_plane > 0 && c.blocks_per_plane <= 65536 &&
         c.pages_per_block > 0 && c.pages_per_block <= 65536 &&
         c.host_stripe_bytes == 4096;
+    if (c.enable_read_sram &&
+        (c.allow_program || (!c.sram_bytes_per_plane && !c.base_die_sram_bytes_per_stack) ||
+         !valid_bandwidth(c.read_sram_access_latency_ns) ||
+         !valid_bandwidth(c.read_sram_bandwidth_GBps_per_stack)))
+        throw std::invalid_argument("invalid read SRAM configuration");
     if ((!legacy_geometry && !grouped_geometry) || c.stacks < 1 ||
         c.stacks > std::numeric_limits<int>::max() / (c.dies_per_stack * c.planes_per_die) ||
         c.host_channels_per_stack != 16 ||
