@@ -4,7 +4,7 @@
 
 namespace hbfine {
 
-enum class GeometryProfile { OCPReference, HBFlexResearch };
+enum class GeometryProfile { OCPReference, HBFlexResearch, GroupedPlanes };
 
 struct Config {
     GeometryProfile geometry{GeometryProfile::HBFlexResearch};
@@ -15,6 +15,7 @@ struct Config {
     int planes_per_die{32};
     int banks_per_channel{32};
     int planes_per_bank{1};
+    int planes_per_command_group{1};
     int blocks_per_plane{512};
     int pages_per_block{512};
     int page_bytes{4096};
@@ -36,6 +37,7 @@ struct Config {
     double dispatch_interval_ns{0.0};
     double core_transfer_GBps_per_die{0.0};
     double ecc_GBps_per_stack{0.0};
+    std::uint64_t sram_bytes_per_plane{};
     std::uint64_t base_die_sram_bytes_per_stack{40000000};
 };
 

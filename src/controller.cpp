@@ -22,7 +22,7 @@ public:
     Impl(const Config& config, std::uint64_t base, std::size_t capacity)
         : c_(config), base_(base), capacity_(capacity),
           channels_(c_.stacks * c_.host_channels_per_stack),
-          banks_(channels_.size() * c_.banks_per_channel),
+          banks_(scheduling_unit_count(c_)),
           dispatch_next_(c_.stacks), die_next_(c_.stacks * c_.dies_per_stack), ecc_next_(c_.stacks) {
         const auto planes = static_cast<std::size_t>(c_.stacks * c_.dies_per_stack * c_.planes_per_die);
         stats_.stack_read_bytes.resize(c_.stacks);
@@ -181,8 +181,6 @@ private:
     static Time ns(double value) { return static_cast<Time>(std::ceil(value * 1000)); }
     static Time transfer_time(int bytes, double bandwidth) { return static_cast<Time>(std::ceil(bytes * 1000.0 / bandwidth)); }
     int channel_id(const Address& a) const { return a.stack * 16 + a.channel; }
-    int bank_id(const Address& a) const { return channel_id(a) * c_.banks_per_channel + a.bank; }
-    int plane_id(const Address& a) const { return (a.stack * c_.dies_per_stack + a.die) * c_.planes_per_die + a.plane; }
     void schedule(Time time, std::function<void()> action) { events_.push({time, serial_++, std::move(action)}); }
 
     bool valid_page(std::uint64_t page) const {
@@ -230,7 +228,7 @@ private:
         stats_.channel_read_bytes[channel] += 64;
         stats_.stack_read_bytes[address.stack] += 64;
         ++stats_.bank_reads[bank];
-        ++stats_.plane_reads[plane_id(address)];
+        ++stats_.plane_reads[physical_plane_id(address, c_)];
         schedule(ch.read_next, [this, beat, bank, slot] {
             --banks_[bank].buffers[slot].pins;
             finish(beat);
@@ -242,10 +240,11 @@ private:
         const auto page = beat.address / 4096 * 4096;
         if (!valid_page(page)) { finish(beat, Error::UninitializedPage); return; }
         const auto address = decode_address(beat.address, base_, c_);
-        const int bank = bank_id(address);
+        const auto mapping = map_read(address, beat.address, base_, c_);
+        const int bank = mapping.unit;
         for (int slot = 0; slot < 2; ++slot) {
             auto& buffer = banks_[bank].buffers[slot];
-            if (buffer.page != page) continue;
+            if (buffer.page != mapping.buffer_key) continue;
             if (buffer.ready) { ++stats_.cache_hits; transfer_read(beat, bank, slot); }
             else { ++stats_.cache_misses; buffer.waiting.push_back(beat); }
             return;
@@ -255,11 +254,11 @@ private:
         wake(bank);
     }
 
-    Time core_transfer(Time ready, const Address& address) {
+    Time core_transfer(Time ready, const Address& address, int bytes = 4096) {
         const auto reserve = [&](Time& next, double rate, std::uint64_t& busy) {
             if (rate == 0) return;
             const Time start = std::max(ready, next);
-            const Time duration = transfer_time(4096, rate);
+            const Time duration = transfer_time(bytes, rate);
             stats_.transfer_wait_ps += start - ready;
             busy += duration;
             ready = next = start + duration;
@@ -281,8 +280,9 @@ private:
         auto& b = banks_[bank];
         while (!b.queue.empty()) {
             const auto operation = b.queue.front();
-            const auto page = operation.beat.address / 4096 * 4096;
-            const auto address = decode_address(page, base_, c_);
+            const auto address = decode_address(operation.beat.address, base_, c_);
+            const auto mapping = map_read(address, operation.beat.address, base_, c_);
+            const auto page = mapping.buffer_key;
             if (!operation.program) {
                 int matching = -1;
                 for (int slot = 0; slot < 2; ++slot) if (b.buffers[slot].page == page) matching = slot;
@@ -309,15 +309,17 @@ private:
                 b.queue.pop_front();
                 b.busy = true;
                 const Time duration = us(c_.sense_latency_us);
-                ++stats_.senses;
-                stats_.sensed_bytes += 4096;
+                const int sensed_planes = mapping.plane_count;
+                stats_.senses += sensed_planes;
+                stats_.sensed_bytes += sensed_planes * c_.page_bytes;
                 stats_.bank_wait_ps += current_ - operation.beat.arrival;
                 stats_.bank_busy_ps[bank] += duration;
-                stats_.plane_sense_busy_ps[plane_id(address)] += duration;
+                for (int lane = 0; lane < sensed_planes; ++lane)
+                    stats_.plane_sense_busy_ps[mapping.first_plane + lane] += duration;
                 stats_.stack_busy_ps[address.stack] += duration;
-                schedule(current_ + duration, [this, bank, slot, address] {
+                schedule(current_ + duration, [this, bank, slot, address, sensed_planes] {
                     banks_[bank].busy = false;
-                    const Time ready = core_transfer(current_, address);
+                    const Time ready = core_transfer(current_, address, sensed_planes * c_.page_bytes);
                     schedule(ready, [this, bank, slot] {
                         auto& buffer = banks_[bank].buffers[slot];
                         buffer.ready = true;
@@ -338,7 +340,7 @@ private:
                     if (address.page == 0) {
                         ++stats_.erases;
                         const Time duration = us(c_.erase_latency_us);
-                        stats_.plane_erase_busy_ps[plane_id(address)] += duration;
+                        stats_.plane_erase_busy_ps[physical_plane_id(address, c_)] += duration;
                         stats_.bank_busy_ps[bank] += duration;
                         stats_.stack_busy_ps[address.stack] += duration;
                         schedule(current_ + duration, [this, bank, page, address] { program(bank, page, address); });
@@ -383,7 +385,7 @@ private:
         }
         if (protected_block || address.page != next_program_page_[block_key]) { fail_write(page, Error::IllegalProgramOrder); return; }
         ++next_program_page_[block_key];
-        const int bank = bank_id(address);
+        const int bank = scheduling_unit_id(address, c_);
         banks_[bank].queue.push_back({true, Beat{0, page, current_}});
         wake(bank);
     }
@@ -406,7 +408,7 @@ private:
     void program(int bank, std::uint64_t page, Address address) {
         ++stats_.programs;
         const Time duration = us(c_.program_latency_us);
-        stats_.plane_program_busy_ps[plane_id(address)] += duration;
+        stats_.plane_program_busy_ps[physical_plane_id(address, c_)] += duration;
         stats_.bank_busy_ps[bank] += duration;
         stats_.stack_busy_ps[address.stack] += duration;
         schedule(current_ + duration, [this, bank, page, address] {
