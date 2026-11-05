@@ -178,6 +178,7 @@ private:
     std::vector<Region> preloaded_;
     std::vector<Completion> completed_;
     Statistics stats_;
+    std::unordered_set<std::uint64_t> grouped_sense_addresses_;
 
     static Time us(double value) { return static_cast<Time>(std::ceil(value * 1000000)); }
     static Time ns(double value) { return static_cast<Time>(std::ceil(value * 1000)); }
@@ -337,6 +338,11 @@ private:
                 b.busy = true;
                 const Time duration = us(c_.sense_latency_us);
                 const int sensed_planes = mapping.plane_count;
+                ++stats_.sense_commands;
+                // Grouped buffer keys are globally unique physical Megapage addresses.
+                if (c_.geometry == GeometryProfile::GroupedPlanes &&
+                    grouped_sense_addresses_.insert(page).second)
+                    ++stats_.unique_sense_addresses;
                 stats_.senses += sensed_planes;
                 stats_.sensed_bytes += sensed_planes * c_.page_bytes;
                 stats_.bank_wait_ps += current_ - operation.beat.arrival;

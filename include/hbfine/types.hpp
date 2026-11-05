@@ -24,6 +24,8 @@ struct Completion {
 struct Statistics {
     std::uint64_t accepted_requests{}, completed_requests{}, failed_requests{};
     std::uint64_t host_read_bytes{}, host_write_bytes{}, sensed_bytes{};
+    // Counts actual Sense commands, independently of the number of sensed planes.
+    std::uint64_t sense_commands{}, unique_sense_addresses{};
     std::uint64_t senses{}, programs{}, erases{}, cache_hits{}, cache_misses{}, cache_evictions{};
     std::uint64_t queue_stalls{}, bank_wait_ps{}, transfer_wait_ps{}, events_processed{};
     std::uint64_t elapsed_ps{};
