@@ -1,5 +1,6 @@
 #include <hbfine/controller.hpp>
 #include <hbfine/address.hpp>
+#include <hbfine/statistics.hpp>
 
 #include <algorithm>
 #include <array>
@@ -178,6 +179,8 @@ private:
     std::vector<Region> preloaded_;
     std::vector<Completion> completed_;
     Statistics stats_;
+    BandwidthSampler bandwidth_{c_.statistics_interval_ps,
+                                stats_.bandwidth_bins};
     std::unordered_set<std::uint64_t> grouped_sense_addresses_;
 
     static Time us(double value) { return static_cast<Time>(std::ceil(value * 1000000)); }
@@ -236,6 +239,11 @@ private:
         ++stats_.bank_reads[bank];
         ++stats_.plane_reads[physical_plane_id(address, c_)];
         schedule(ch.read_next, [this, beat, bank, slot] {
+            bandwidth_.add(current_, &BandwidthBin::host_read_bytes, 64);
+            if (parents_.at(beat.parent).request.read_path ==
+                ReadPath::Resident)
+                bandwidth_.add(current_, &BandwidthBin::resident_read_bytes,
+                               64);
             if (slot >= 0) --banks_[bank].buffers[slot].pins;
             finish(beat);
             if (slot >= 0) wake(bank);
@@ -249,6 +257,8 @@ private:
         buffer.last_use = current_;
         if (parents_.at(beat.parent).request.read_path == ReadPath::Prefetch) {
             schedule(sram_transfer(address.stack), [this, beat, bank, slot] {
+                bandwidth_.add(current_, &BandwidthBin::prefetch_fill_bytes,
+                               64);
                 --banks_[bank].buffers[slot].pins;
                 finish(beat);
                 wake(bank);
@@ -350,7 +360,11 @@ private:
                 for (int lane = 0; lane < sensed_planes; ++lane)
                     stats_.plane_sense_busy_ps[mapping.first_plane + lane] += duration;
                 stats_.stack_busy_ps[address.stack] += duration;
-                schedule(current_ + duration, [this, bank, slot, address, sensed_planes] {
+                schedule(current_ + duration, [this, bank, slot, address,
+                                               sensed_planes] {
+                    bandwidth_.add(current_, &BandwidthBin::media_read_bytes,
+                                   sensed_planes * c_.page_bytes);
+                    bandwidth_.add(current_, &BandwidthBin::sense_commands, 1);
                     banks_[bank].busy = false;
                     const Time ready = core_transfer(current_, address, sensed_planes * c_.page_bytes);
                     schedule(ready, [this, bank, slot] {

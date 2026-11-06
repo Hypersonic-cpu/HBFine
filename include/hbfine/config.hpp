@@ -37,6 +37,8 @@ struct Config {
     double dispatch_interval_ns{0.0};
     double core_transfer_GBps_per_die{0.0};
     double ecc_GBps_per_stack{0.0};
+    // Optional observational statistics; zero disables time bins.
+    std::uint64_t statistics_interval_ps{};
     bool enable_read_sram{false};
     double read_sram_access_latency_ns{0.0};
     double read_sram_bandwidth_GBps_per_stack{0.0};

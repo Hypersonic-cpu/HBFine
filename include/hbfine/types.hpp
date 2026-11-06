@@ -21,6 +21,11 @@ struct Completion {
     Operation operation;
     Error error{Error::None};
 };
+struct BandwidthBin {
+    Time start_ps{}, end_ps{};
+    std::uint64_t media_read_bytes{}, host_read_bytes{}, prefetch_fill_bytes{};
+    std::uint64_t resident_read_bytes{}, sense_commands{};
+};
 struct Statistics {
     std::uint64_t accepted_requests{}, completed_requests{}, failed_requests{};
     std::uint64_t host_read_bytes{}, host_write_bytes{}, sensed_bytes{};
@@ -29,6 +34,7 @@ struct Statistics {
     std::uint64_t senses{}, programs{}, erases{}, cache_hits{}, cache_misses{}, cache_evictions{};
     std::uint64_t queue_stalls{}, bank_wait_ps{}, transfer_wait_ps{}, events_processed{};
     std::uint64_t elapsed_ps{};
+    std::vector<BandwidthBin> bandwidth_bins;
     std::vector<std::uint64_t> stack_read_bytes, channel_read_bytes, bank_reads, plane_reads;
     std::vector<std::uint64_t> stack_busy_ps, channel_read_busy_ps, channel_write_busy_ps;
     std::vector<std::uint64_t> bank_busy_ps, plane_sense_busy_ps, plane_program_busy_ps, plane_erase_busy_ps;

@@ -19,7 +19,7 @@ void validate_config(const Config& c) {
     const bool grouped_geometry = grouped && !c.allow_program &&
         c.dies_per_stack > 0 && c.dies_per_stack <= 64 &&
         c.planes_per_die > 0 && c.planes_per_die <= 256 &&
-        c.planes_per_command_group > 1 && c.planes_per_die % c.planes_per_command_group == 0 &&
+        c.planes_per_command_group > 0 && c.planes_per_die % c.planes_per_command_group == 0 &&
         c.planes_per_bank == 1 && c.banks_per_channel > 0 && c.banks_per_channel <= 1024 &&
         c.banks_per_channel * 16 == c.dies_per_stack * c.planes_per_die &&
         c.blocks_per_plane > 0 && c.blocks_per_plane <= 65536 &&
